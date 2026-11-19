@@ -20,7 +20,9 @@ iphen(
   scaleType = "unit",
   iniType = "EVD",
   time = NULL,
-  status = NULL
+  status = NULL,
+  seed = 123,
+  pathway = TRUE
 )
 }
 \arguments{
@@ -42,6 +44,13 @@ columns), one per platform, with rows matched across platforms.}
 \item{iniType}{Initialisation: "EVD", "SVD" or random otherwise.}
 
 \item{time, status}{Optional survival time and event status for prognosis analyses.}
+
+\item{seed}{Random seed for the MCMC sampler and downstream SAM/PAM/mclust
+steps (default 123, the previous hard-coded value). Use different seeds to
+run independent chains; \code{NULL} leaves the caller's RNG state untouched.}
+
+\item{pathway}{Run Reactome pathway enrichment per MV (default \code{TRUE}).
+This step dominates runtime; set \code{FALSE} for quick or repeated runs.}
 }
 \value{
 Invisibly, the list of MCMC samples (also saved to

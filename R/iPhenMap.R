@@ -17,10 +17,17 @@
 #' @param scaleType Scaling: "unit", "pareto", "view", "overall" or "none".
 #' @param iniType Initialisation: "EVD", "SVD" or random otherwise.
 #' @param time,status Optional survival time and event status for prognosis analyses.
+#' @param seed Random seed for the MCMC sampler and downstream SAM/PAM/mclust
+#'   steps (default 123, the previous hard-coded value). Use different seeds to
+#'   run independent chains; \code{NULL} leaves the caller's RNG state untouched.
+#' @param pathway Run Reactome pathway enrichment per MV (default \code{TRUE}).
+#'   This step dominates runtime; set \code{FALSE} for quick or repeated runs.
 #' @return Invisibly, the list of MCMC samples (also saved to
 #'   "iPhenMAPresults/MCMCsamples/iPhenMAP-mcmcSamples.RData").
 #' @export
-iphen<-function(D,X,q=10,mcmc=10000,g=1000,c=1,d=1,nu0=.01,Sigo=.01,s2o=.01,nu0k=.01,noiseMod='unique',scaleType='unit',iniType='EVD',time=NULL,status=NULL){
+iphen<-function(D,X,q=10,mcmc=10000,g=1000,c=1,d=1,nu0=.01,Sigo=.01,s2o=.01,nu0k=.01,noiseMod='unique',scaleType='unit',iniType='EVD',time=NULL,status=NULL,seed=123,pathway=TRUE){
+
+  if(mcmc %% 1250 != 0) stop("mcmc must be a multiple of 1250 (thinning keeps 1250 draws); got ", mcmc)
 
   ####################################
   ## installing missing R packages
@@ -28,7 +35,7 @@ iphen<-function(D,X,q=10,mcmc=10000,g=1000,c=1,d=1,nu0=.01,Sigo=.01,s2o=.01,nu0k
   required<-c("MCMCglmm","cluster","fpc","dplyr","MetabolAnalyze","ggplot2","RColorBrewer","ggrepel","circlize","MASS","ConsensusClusterPlus",
               "Rcpp","scales","digest","gridExtra","reshape2","plyr","lattice","cowplot","ComplexHeatmap","MCMCpack","siggenes",
               "pamr","mixtools","colorspace","GetoptLong","Hmisc","plotrix","survminer","AnnotationDbi","org.Hs.eg.db","ReactomePA",
-              "psych","mclust","survival","devtools","githubinstall","NMF")
+              "psych","mclust","survival","NMF")  # devtools/githubinstall were unused; githubinstall is archived on CRAN, so it was re-"installed" (network hit) on every call
   toinstall<-required[!(required %in% installed)]
   if(length(toinstall) != 0){
     if(as.numeric(paste0((unlist(getRversion()))[1:2],collapse = '.'))>3.4){
@@ -273,7 +280,7 @@ iphen<-function(D,X,q=10,mcmc=10000,g=1000,c=1,d=1,nu0=.01,Sigo=.01,s2o=.01,nu0k
   covars=t(tcov)
   
   ########
-  set.seed(123) 
+  if(!is.null(seed)) set.seed(seed)
   ## initialize parameters 
   St=(tY%*%Y)/n      # data covariance matrix
   iniUWS=iniMod(Y,n,St,p,q,diag(q),iniType)
@@ -722,7 +729,7 @@ iphen<-function(D,X,q=10,mcmc=10000,g=1000,c=1,d=1,nu0=.01,Sigo=.01,s2o=.01,nu0k
   for(i in 1:nT){
     ddir=paste0("Clustering/Consensus/DFA/",names(D)[i])
     dir.create(ddir, showWarnings = FALSE)
-    set.seed(123)
+    if(!is.null(seed)) set.seed(seed)
     d1=t(Y[,indx[[i]]]); dim(d1) 
     d1u=t(dd[,indx[[i]]]); dim(d1u) 
     tryCatch({
@@ -808,7 +815,7 @@ iphen<-function(D,X,q=10,mcmc=10000,g=1000,c=1,d=1,nu0=.01,Sigo=.01,s2o=.01,nu0k
   }
  
   # model based 
-  set.seed(123)
+  if(!is.null(seed)) set.seed(seed)
   yBIC2<-mclustBIC(scores,G=2:gmax,modelNames=c('EEI','EII','EEE')) 
   rs2<-summary(yBIC2,scores)
   tau<-rs2$classification  
@@ -872,9 +879,11 @@ iphen<-function(D,X,q=10,mcmc=10000,g=1000,c=1,d=1,nu0=.01,Sigo=.01,s2o=.01,nu0k
     }
     # pathway analysis
     expgenesup <- expgenesdown <- progenesup <- progenesdown <- NULL
+    pfeatup <- pfeatdown <- NULL
+    if(pathway){
     expgenesup = if(z[1,i]==1) rownames(tload)[tload[indx[[1]],i] > 2]
     expgenesdown = if(z[1,i]==1) rownames(tload)[tload[indx[[1]],i] < (-2)]
-    if(z[2,i]==1){
+    if(nT>=2 && z[2,i]==1){
       tfeatup = rownames(tload)[ tload[indx[[2]],i] > 2 ]
       tfeatdown = rownames(tload)[ tload[indx[[2]],i] < (-2) ]
       if(length(tfeatup)!=0) {
@@ -888,15 +897,17 @@ iphen<-function(D,X,q=10,mcmc=10000,g=1000,c=1,d=1,nu0=.01,Sigo=.01,s2o=.01,nu0k
     } 
     pfeatup=c(expgenesup,progenesup)
     pfeatdown=c(expgenesdown,progenesdown)
+    }
     if(!is.null(pfeatup)){
       if(length(pfeatup)!=0){
         deup=AnnotationDbi::select(org.Hs.eg.db, keys = pfeatup,columns = c("ENTREZID", "SYMBOL"),keytype = "SYMBOL")
         deup=deup[!is.na(deup[,2]),2]; length(deup)
         xup <- enrichPathway(gene=deup,pvalueCutoff=0.1, readable=T)
-        head(as.data.frame(xup))
+        if(!is.null(xup) && nrow(as.data.frame(xup))>0){
         pdf(paste0(ddir2,"/pathway_MV",i,"_up_regulated_genes.pdf"))
         print(dotplot(xup, showCategory=15))
         dev.off()
+        }
       }
     }
     if(!is.null(pfeatdown)){
@@ -904,10 +915,11 @@ iphen<-function(D,X,q=10,mcmc=10000,g=1000,c=1,d=1,nu0=.01,Sigo=.01,s2o=.01,nu0k
         dedown=AnnotationDbi::select(org.Hs.eg.db, keys = pfeatdown,columns = c("ENTREZID", "SYMBOL"),keytype = "SYMBOL")
         dedown=dedown[!is.na(dedown[,2]),2]; length(dedown)
         xdown <- enrichPathway(gene=dedown,pvalueCutoff=0.1, readable=T)
-        head(as.data.frame(xdown))
+        if(!is.null(xdown) && nrow(as.data.frame(xdown))>0){
         pdf(paste0(ddir2,"/pathway_MV",i,"_down_regulated_genes.pdf"))
         print(dotplot(xdown, showCategory=15))
         dev.off()
+        }
       }
     }
     afys<-datsplit<-NULL
@@ -963,7 +975,7 @@ iphen<-function(D,X,q=10,mcmc=10000,g=1000,c=1,d=1,nu0=.01,Sigo=.01,s2o=.01,nu0k
   for(i in 1:nT){
     ddirmb=paste0("Clustering/ModelBased/DFA/",names(D)[i])
     dir.create(ddirmb, showWarnings = FALSE)
-    set.seed(123)
+    if(!is.null(seed)) set.seed(seed)
     d1=t(Y[,indx[[i]]]); dim(d1) 
     d1u=t(dd[,indx[[i]]]); dim(d1u) 
     tryCatch({
